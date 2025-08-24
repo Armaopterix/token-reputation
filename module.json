@@ -1,0 +1,26 @@
+{
+  "id": "token-reputation",
+  "title": "Token Reputation",
+  "description": "Shows a reputation badge on tokens and adds an easy slider to set NPC reputation.",
+  "version": "1.0.2",
+  "compatibility": {
+    "minimum": "12",
+    "verified": "13"
+  },
+  "authors": [
+    {
+      "name": "Opterix (Martin J.)"
+    }
+  ],
+  "esmodules": [
+    "scripts/reputation.js"
+  ],
+  "styles": [
+    "styles/reputation.css"
+  ],
+  "packs": [],
+  "url": "https://example.com",
+  "manifest": "https://example.com/token-reputation/module.json",
+  "download": "https://example.com/token-reputation/token-reputation.zip",
+  "license": "Proprietary"
+}

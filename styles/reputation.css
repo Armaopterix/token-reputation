@@ -1,0 +1,40 @@
+
+.reputation-hud {
+  padding: 6px 8px;
+  margin-top: 4px;
+  background: rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+}
+.reputation-hud .rep-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-weight: bold;
+}
+.reputation-hud #rep-slider {
+  width: 100%;
+}
+.reputation-hud .rep-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+.reputation-hud .rep-current {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.reputation-hud .rep-quick {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  margin-top: 6px;
+}
+.reputation-hud .rep-btn {
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 16px;
+}
