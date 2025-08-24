@@ -1,7 +1,7 @@
 # Token Reputation
 
 **Author:** Opterix (Martin J.)  
-**Version:** 1.0.2
+**Version:** 1.0.3
 **Compatibility:** Foundry VTT v13
 
 ---

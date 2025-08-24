@@ -74,6 +74,20 @@ Hooks.once("init", function() {
     scope: "client", config: true, type: Boolean, default: false,
     onChange: redrawAllBadges
   });
+  // Show the legacy Token HUD panel (slider and quick buttons). Default off when using right-click menu.
+  
+  // Context menu trigger (right-click and keyboard 'R')
+  game.settings.register(MODULE_ID, "enableContextMenu", {
+    name: "Enable context menu triggers",
+    hint: "Allow right-click and the 'R' key to open the Reputation menu. When disabled, use the HUD 'R' button or the sheet/actor dialog.",
+    scope: "client", config: true, type: Boolean, default: false
+  });
+game.settings.register(MODULE_ID, "enableHudPanel", {
+    name: "Show Token HUD panel",
+    hint: "Show the Reputation panel inside the Token HUD (slider and quick buttons). Disable if you use the right-click menu.",
+    scope: "client", config: true, type: Boolean, default: false
+  });
+
 
   game.settings.register(MODULE_ID, "hideLocally", {
     name: "Hide badge locally",
@@ -110,6 +124,14 @@ function getLevel(doc) {
   lvl = Math.max(0, Math.min(Number(lvl), LEVELS.length - 1));
   return lvl;
 }
+async function setLevel(doc, idx) {
+  idx = Math.max(0, Math.min(Number(idx), LEVELS.length-1));
+  await doc.setFlag(MODULE_ID, "level", idx);
+  const t = canvas.tokens?.get(doc.id);
+  if (t) drawBadge(t);
+  return idx;
+}
+
 
 // Color palettes for non-hostile levels
 const PALETTE_DEFAULT = [0x8B0000, 0xB22222, 0xDC143C, 0x808080, 0x2E8B57, 0x228B22];
@@ -233,12 +255,39 @@ function drawBadge(token) {
 
 // GM Token HUD
 Hooks.on("renderTokenHUD", (hud, html, data) => {
-  if (!game.user.isGM) return;
+if (!game.user.isGM) return;
   const $html = (html && typeof html.find === "function") ? html : $(html);
   const doc = hud.object?.document ?? canvas.tokens?.controlled[0]?.document;
   if (!doc) return;
 
-  const current = getLevel(doc);
+  
+  // --- 
+  // --- Add small HUD button "R" to open the slider dialog (robust container detection + jQuery fallback)
+  try {
+    // Normalize html to jQuery
+    const $root = (html && html.jquery) ? html : $(html);
+
+    // Avoid duplicates
+    if ($root.find(".control-icon.reputation-icon").length === 0) {
+      const doc = hud.object?.document ?? canvas.tokens?.get(hud.object?.id)?.document;
+
+      // Prefer right column; otherwise fall back to the column that contains control icons.
+      let $container = $root.find(".col.right");
+      if ($container.length === 0) {
+        const $icons = $root.find(".control-icon");
+        $container = $icons.length ? $icons.last().parent() : $root.find(".col").last();
+      }
+
+      if ($container && $container.length) {
+        const $btn = $(`<div class="control-icon reputation-icon" title="Reputation"><span class="rep-letter">R</span></div>`);
+        $btn.on("click", ev => { ev.preventDefault(); ev.stopPropagation(); openReputationDialog(doc); });
+        $container.prepend($btn);
+      }
+    }
+  } catch(e) { console.warn(`[${MODULE_ID}] HUD button injection failed`, e); }
+  // If enabled, also show the legacy HUD panel (slider + quick buttons)
+  if (!game.settings.get(MODULE_ID, "enableHudPanel")) return;
+const current = getLevel(doc);
   const labels = LEVELS.map(l => l.label);
 
   const root = $(`
@@ -283,10 +332,24 @@ Hooks.on("renderTokenHUD", (hud, html, data) => {
 });
 
 // D&D5e tab (kept; may be limited on some builds)
+
 function inject5eReputationTab(app, html, actor) {
   try {
     if (!actor) return;
-    if (html.find('a.item[data-tab="token-rep"]').length) return;
+    const $root = (html && html.jquery) ? html : $(html);
+
+    // Header button (robust) - shows 'R' in the sheet header to open actor reputation dialog
+    try {
+      const $header = $root.find(".window-header, header.window-header, .sheet-header, header");
+      if ($header.length && $root.find(".token-rep-headbtn").length === 0) {
+        const $btn = $(`<a class="token-rep-headbtn" title="Reputation" style="margin-left:6px; font-weight:800;">R</a>`);
+        $btn.on("click", ev => { ev.preventDefault(); ev.stopPropagation(); openActorReputationDialog(actor); });
+        // Prefer header actions group if present
+        const $actions = $root.find(".window-header .header-actions, .sheet-header .header-actions").first();
+        if ($actions.length) $actions.prepend($btn);
+        else $header.first().append($btn);
+      }
+    } catch(e) { /* non-fatal */ }
 
     const canEdit = game.user.isGM;
     const current = actor.getFlag(MODULE_ID, "level") ?? game.settings.get(MODULE_ID, "defaultLevel") ?? 3;
@@ -298,7 +361,6 @@ function inject5eReputationTab(app, html, actor) {
         <div class="rep-current" style="min-width:140px;">Current: <b>${LEVELS[current].label}</b></div>
       </div>
     `);
-
     if (!canEdit) control.find(".rep-slider").attr("disabled", true);
     control.find(".rep-slider").on("input", ev => {
       const v = Number(ev.target.value);
@@ -309,68 +371,236 @@ function inject5eReputationTab(app, html, actor) {
       await actor.setFlag(MODULE_ID, "level", v).catch(()=>{});
       if (actor.prototypeToken) await actor.prototypeToken.setFlag(MODULE_ID, "level", v).catch(()=>{});
       const tokens = actor.getActiveTokens(true);
-      for (const t of tokens) { await t.document.setFlag(MODULE_ID, "level", v).catch(()=>{}); drawBadge(t); }
+      for (const t of tokens) { try { await t.document.setFlag(MODULE_ID, "level", v); drawBadge(t); } catch(_){} }
     });
 
-    const tabsNav = html.find(".sheet-navigation .sheet-tabs, nav.sheet-tabs, .sheet-tabs").first();
-    if (tabsNav.length) {
-      const btn = $(`<a class="item" data-tab="token-rep"><i class="fa-solid fa-users"></i> Reputation</a>`);
-      tabsNav.append(btn);
+    const tabsNav = $root.find(".sheet-navigation .sheet-tabs, nav.sheet-tabs, .sheet-tabs").first();
+    const sheetBody = $root.find(".sheet-body").first();
+
+    let injected = false;
+    if (tabsNav.length && sheetBody.length) {
+      if ($root.find('a.item[data-tab="token-rep"]').length === 0) {
+        const btn = $(`<a class="item" data-tab="token-rep"><i class="fa-solid fa-users"></i> Reputation</a>`);
+        tabsNav.append(btn);
+      }
+      if ($root.find('section.tab[data-tab="token-rep"]').length === 0) {
+        const panel = $(`<section class="tab" data-tab="token-rep"></section>`);
+        panel.append(control);
+        sheetBody.append(panel);
+      } else {
+        $root.find('section.tab[data-tab="token-rep"]').empty().append(control);
+      }
+      if (Array.isArray(app._tabs)) for (const t of app._tabs) { try { t.bind($root[0]); } catch(e){} }
+      injected = true;
     }
-    const sheetBody = html.find(".sheet-body").first();
-    if (sheetBody.length) {
-      const panel = $(`<section class="tab" data-tab="token-rep"></section>`);
-      panel.append(`<div style="margin:6px 0 12px; opacity:.8;">Set the attitude of this character towards the party. Changes sync to prototype token and active tokens.</div>`);
-      panel.append(control);
-      sheetBody.append(panel);
+
+    if (!injected) {
+      const wc = $root.find(".window-content").first();
+      if (wc.length && wc.find(".token-rep-sheet").length === 0) {
+        wc.prepend(control);
+      }
     }
-    if (Array.isArray(app._tabs)) for (const t of app._tabs) { try { t.bind(html[0]); } catch(e){} }
   } catch (err) { console.error(`[${MODULE_ID}] inject5eReputationTab error`, err); }
 }
 Hooks.on("renderActorSheet5eCharacter", (app, html, data) => inject5eReputationTab(app, html, app.object));
 Hooks.on("renderActorSheet5eNPC",       (app, html, data) => inject5eReputationTab(app, html, app.object));
 
 // Dialog (also for unlinked tokens)
+
+
 async function openReputationDialog(doc) {
+  if (!doc) { ui.notifications?.warn("No token document available."); return; }
   const current = getLevel(doc);
   const canEdit = game.user.isGM;
   const content = `
     <div class="flexcol" style="gap:8px">
       <div>Reputation level for this token:</div>
       <input id="rep-slider-dialog" type="range" min="0" max="${LEVELS.length-1}" step="1" value="${current}" ${canEdit ? "" : "disabled"} />
-      <div>Current: <b id="rep-current-dialog">${LEVELS[current].label}</b></div>
-      <div style="display:grid; grid-template-columns: repeat(${LEVELS.length},1fr); gap:4px;">
-        ${LEVELS.map((l, i) => `<button type="button" class="rep-btn-dialog" data-v="${i}" ${canEdit ? "" : "disabled"}>${l.short}</button>`).join("")}
+      <div class="rep-labels" style="display:flex;justify-content:space-between;">
+        <span>${LEVELS[0].label}</span>
+        <span>${LEVELS[LEVELS.length-1].label}</span>
       </div>
-    </div>`;
-
+      <div class="rep-current">Current: <b>${LEVELS[current].label}</b></div>
+    </div>
+  `;
   const d = new Dialog({
-    title: "NPC Reputation", content,
+    title: "Token Reputation",
+    content,
     buttons: { close: { label: "Close" } },
+    default: "close",
     render: (html) => {
-      const slider = html[0].querySelector("#rep-slider-dialog");
-      const label  = html[0].querySelector("#rep-current-dialog");
-      const commit = async (v) => {
-        await doc.setFlag(MODULE_ID, "level", Number(v));
-        const token = canvas.tokens?.get(doc.id);
-        if (token) drawBadge(token);
-      };
-      slider?.addEventListener("input", ev => { const v = Number(ev.target.value); if (label) label.textContent = LEVELS[v].label; });
-      slider?.addEventListener("change", async ev => { if (!canEdit) return; await commit(ev.target.value); });
-      html.find(".rep-btn-dialog").on("click", async (ev) => {
-        if (!canEdit) return;
-        const v = Number(ev.currentTarget.dataset.v);
-        slider.value = v; if (label) label.textContent = LEVELS[v].label;
-        await commit(v);
+      const $html = html instanceof jQuery ? html : $(html);
+      const slider = $html.find("#rep-slider-dialog");
+      slider.on("input", ev => {
+        const v = Number(ev.target.value);
+        $html.find(".rep-current").html(`Current: <b>${LEVELS[v].label}</b>`);
       });
-    },
-    default: "close"
+      slider.on("change", async ev => {
+        if (!canEdit) return;
+        await setLevel(doc, Number(ev.target.value));
+      });
+    }
   });
   d.render(true);
 }
+async function openActorReputationDialog(actor) {
+  try {
+    if (!actor) { ui.notifications?.warn("No actor available."); return; }
+    const canEdit = game.user.isGM;
+    const current = actor.getFlag(MODULE_ID, "level") ?? game.settings.get(MODULE_ID, "defaultLevel") ?? 3;
+    const content = `
+      <div class="flexcol" style="gap:8px">
+        <div>Reputation level for this actor:</div>
+        <input id="rep-slider-actor" type="range" min="0" max="${LEVELS.length-1}" step="1" value="${current}" ${canEdit ? "" : "disabled"} />
+        <div class="rep-labels" style="display:flex;justify-content:space-between;">
+          <span>${LEVELS[0].label}</span>
+          <span>${LEVELS[LEVELS.length-1].label}</span>
+        </div>
+        <div class="rep-current">Current: <b>${LEVELS[current].label}</b></div>
+      </div>
+    `;
+    const d = new Dialog({
+      title: "Actor Reputation",
+      content,
+      buttons: { close: { label: "Close" } },
+      default: "close",
+      render: (html) => {
+        const $html = html instanceof jQuery ? html : $(html);
+        const slider = $html.find("#rep-slider-actor");
+        slider.on("input", ev => {
+          const v = Number(ev.target.value);
+          $html.find(".rep-current").html(`Current: <b>${LEVELS[v].label}</b>`);
+        });
+        slider.on("change", async ev => {
+          if (!canEdit) return;
+          const v = Number(ev.target.value);
+          await actor.setFlag(MODULE_ID, "level", v).catch(()=>{});
+          if (actor.prototypeToken) await actor.prototypeToken.setFlag(MODULE_ID, "level", v).catch(()=>{});
+          const tokens = actor.getActiveTokens(true);
+          for (const t of tokens) { try { await t.document.setFlag(MODULE_ID, "level", v); drawBadge(t); } catch(_){} }
+        });
+      }
+    });
+    d.render(true);
+  } catch (e) { console.warn(`[${MODULE_ID}] openActorReputationDialog failed`, e); }
+}
+
+
+
 
 // Auto-refresh on token lifecycle
 Hooks.on("refreshToken", (token) => drawBadge(token));
 Hooks.on("createToken",  (doc)   => { const t = canvas.tokens?.get(doc.id); if (t) drawBadge(t); });
 Hooks.on("updateToken",  (doc)   => { const t = canvas.tokens?.get(doc.id); if (t) drawBadge(t); });
+
+// --- v1.0.3: Right-click Reputation mini-menu + keyboard shortcuts ---
+let __repMenuEl = null;
+let __repMenuTokenId = null;
+
+function closeReputationMenu() {
+  if (__repMenuEl) {
+    __repMenuEl.remove();
+    __repMenuEl = null;
+    __repMenuTokenId = null;
+    document.removeEventListener("keydown", handleRepMenuKeys, true);
+  }
+}
+function handleRepMenuKeys(ev) {
+  if (!__repMenuEl) return;
+  // ESC closes
+  if (ev.key === "Escape") { ev.preventDefault(); closeReputationMenu(); return; }
+  // H = Hostile
+  if (/^[Hh]$/.test(ev.key)) {
+    ev.preventDefault();
+    const hostileIndex = Math.max(0, LEVELS.findIndex(l => (l?.flag || l?.label || "").toLowerCase().includes("hostile")));
+    applyReputationIndex(hostileIndex);
+    return;
+  }
+  // 0-9 direct select (clamped to max)
+  if (/^\d$/.test(ev.key)) {
+    ev.preventDefault();
+    const idx = Math.min(parseInt(ev.key,10), LEVELS.length-1);
+    applyReputationIndex(idx);
+    return;
+  }
+}
+function applyReputationIndex(idx) {
+  const token = canvas.tokens?.get(__repMenuTokenId);
+  if (!token) return closeReputationMenu();
+  const doc = token.document;
+  const current = getLevel(doc);
+  if (idx === current) { closeReputationMenu(); return; }
+  setLevel(doc, idx).then(() => {
+    ui.notifications?.info(`Reputation: ${LEVELS[idx]?.label ?? idx}`);
+    closeReputationMenu();
+  });
+}
+
+function openReputationMenuForToken(token, x, y) {
+  closeReputationMenu();
+  __repMenuTokenId = token.id;
+  // Build menu element
+  const list = LEVELS.map((l,i) => {
+    const key = i; const lab = l.label ?? String(i);
+    return `<li data-idx="${i}"><span class="key">${key}</span><span class="label">${lab}</span></li>`;
+  }).join("");
+  const hostileIndex = Math.max(0, LEVELS.findIndex(l => (l?.flag || l?.label || "").toLowerCase().includes("hostile")));
+  const hostileLabel = LEVELS[hostileIndex]?.label ?? "Hostile";
+  const html = document.createElement("div");
+  html.className = "reputation-menu";
+  html.innerHTML = `
+    <div class="header"><span class="key">R</span><span class="label">Reputation</span></div>
+    <ul class="items">${list}</ul>
+    <div class="footer"><span class="key">H</span><span class="label">${hostileLabel}</span></div>
+  `;
+  document.body.appendChild(html);
+  // Position (keep in viewport)
+  const rect = html.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const posX = Math.min(Math.max(8, x), vw - rect.width - 8);
+  const posY = Math.min(Math.max(8, y), vh - rect.height - 8);
+  html.style.left = posX + "px";
+  html.style.top  = posY + "px";
+  __repMenuEl = html;
+
+  // Click handlers
+  html.addEventListener("click", (ev) => {
+    const li = ev.target.closest("li[data-idx]");
+    if (!li) return;
+    applyReputationIndex(Number(li.dataset.idx));
+  }, { passive: true });
+  html.addEventListener("contextmenu", (ev) => { ev.preventDefault(); closeReputationMenu(); });
+
+  // Global keys when menu open
+  document.addEventListener("keydown", handleRepMenuKeys, true);
+}
+
+// Bind right-click on tokens & global R shortcut for selected token
+Hooks.on("canvasReady", () => {
+  if (!game.settings.get(MODULE_ID, "enableContextMenu")) return; // disabled by default
+  for (const t of canvas.tokens.placeables) {
+    try { t.off?.("rightdown", t._repRightDown); } catch(e){}
+    t._repRightDown = (ev) => {
+      if (!t.controlled) return;
+      const cvs = globalThis.canvas; if (!cvs || !cvs.ready) return;
+      let g = ev?.data?.global; let mx = g?.x, my = g?.y;
+      if (mx == null || my == null) { const c = t.center; const gp = cvs.stage?.toGlobal ? cvs.stage.toGlobal(new PIXI.Point(c.x, c.y)) : {x:c.x,y:c.y}; mx = gp.x; my = gp.y; }
+      openReputationMenuForToken(t, mx, my);
+    };
+    t.on?.("rightdown", t._repRightDown);
+  }
+});
+// Also allow pressing "R" to open the menu for the first controlled token
+document.addEventListener("keydown", (ev) => {
+  if (!game.settings.get(MODULE_ID, "enableContextMenu")) return; // disabled by default
+  if (ev.repeat) return;
+  if (["INPUT","TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  if (ev.key?.toLowerCase() !== "r") return;
+  const cvs = globalThis.canvas; if (!cvs || !cvs.ready) return;
+  const t = cvs.tokens?.controlled?.[0]; if (!t) return;
+  ev.preventDefault();
+  const c = t.center; const gp = cvs.stage?.toGlobal ? cvs.stage.toGlobal(new PIXI.Point(c.x, c.y)) : { x: c.x, y: c.y };
+  openReputationMenuForToken(t, gp.x, gp.y);
+});
+// --- end v1.0.3 additions ---
 Hooks.on("canvasReady",  ()      => redrawAllBadges());

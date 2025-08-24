@@ -2,7 +2,7 @@
   "id": "token-reputation",
   "title": "Token Reputation",
   "description": "Shows a reputation badge on tokens and adds an easy slider to set NPC reputation.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "compatibility": {
     "minimum": "12",
     "verified": "13"
